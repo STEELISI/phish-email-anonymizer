@@ -1,6 +1,7 @@
 from flair.data import Sentence
 from flair.models import SequenceTagger
 from sys import argv
+from urllib.parse import urlparse
 import json, os, sys, re, time
 import nltk, phonenumbers
 #from html.parser import HTMLParser
@@ -15,6 +16,12 @@ names=dict()
 toanon=dict()
 our_suffixes=['usc.edu', 'isi.edu']
 our_orgs=['usc', 'university of southern california', 'information sciences institute', 'institute for creative technologies', 'usc/isi', 'usc-isi', 'usc isi', 'isi', 'ict']
+
+def is_number(text):
+    for i in range(0, len(text)):
+        if not text[i].isdigit():
+            return False
+    return True
 
 def find_overlap(name, toadd):
     global emails, names
@@ -48,6 +55,86 @@ def find_overlap(name, toadd):
                             names[euid[0:match.a].title()] = 1
                         break
 
+
+def find_urls(content):
+    #url_extract_pattern = "https?:\\/\\/(?:www\\.)?[-a-zA-Z0-9@:%._\\+~#=]{1,256}\\.[a-zA-Z0-9()]{1,6}\\b(?:[-a-zA-Z0-9()@:%_\\+.~#?&\\/=]*)"
+    p_list = re.split('[\<\>\(\)\s]', content)
+    for p in p_list:
+        a = urlparse(p)
+        if a.netloc == "urldefense.com":
+            i = a.path.find("http")
+            b = urlparse(a.path[i:])
+            toanon[p] = "url"
+            anonymized[p] = b.scheme+"://"+b.netloc
+        elif a.scheme == 'http' or a.scheme == 'https':
+            toanon[p] = "url"
+            anonymized[p] = a.scheme+"://"+a.netloc
+    
+def find_addresses(content):
+    global toanon, anonymized
+    streets=['street', 'st', 'ave', 'avenue', 'blvd', 'boulevard', 'court', 'ct', 'road', 'rd', 'highway', 'hwy', 'lane', 'ln', 'way',
+             'drive', 'dr', 'terrace', 'ter', 'place', 'pl', 'plaza']
+    longstates=['Alabama', 'Alaska', 'Arizona', 'Arkansas', 'California', 'Colorado', 'Connecticut', 'Delaware', 'District of Columbia', 'Florida', 'Georgia', 'Hawaii', 'Idaho', 'Illinois', 'Indiana', 'Iowa', 'Kansas', 'Kentucky', 'Louisiana', 'Maine', 'Maryland', 'Massachusetts', 'Michigan', 'Minnesota', 'Mississippi', 'Missouri', 'Montana', 'Nebraska', 'Nevada', 'New Hampshire', 'New Jersey', 'New Mexico', 'New York', 'North Carolina', 'North Dakota', 'Ohio', 'Oklahoma', 'Oregon', 'Pennsylvania', 'Rhode Island', 'South Carolina', 'South Dakota', 'Tennessee', 'Texas', 'Utah', 'Vermont', 'Washington', 'West Virginia', 'Wisconsin', 'Wyoming']
+    shortstates=['AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'DC', 'FL', 'GA', 'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD', 'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ', 'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC', 'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY']    
+            
+    # Split into new lines first
+    loc = ""
+    s_list = content.split('\n')
+    for s in s_list:
+        a_list = nltk.tokenize.sent_tokenize(s)
+        for a in a_list:
+            p_list = re.split('[\s\,\.\!\?]', a)
+            for i in range(0, len(p_list)):
+                for j in range (0,3):
+                    if j == 0:
+                        candidate = p_list[i]
+                    elif j == 1:
+                        if i < len(p_list) - 1:
+                            candidate = p_list[i] + ' ' + p_list[i+1]
+                        else:
+                            continue
+                    else:
+                        if i < len(p_list) - 2:
+                            candidate = p_list[i] + ' ' + p_list[i+1] + ' ' + p_list[i+2]
+                        else:
+                            continue
+
+                    if candidate in toanon and toanon[candidate] == "LOC":
+                        # Figure out if it is street, city, state, zip
+                        words = candidate.split(' ')
+                        aloc = []
+                        prev = ""
+                        foundstate = ""
+                        for w in words:
+                            if is_number(w):
+                                if not foundstate:
+                                    w = randint(1, 10000)
+                                    aloc.append(str(w))
+                                else:
+                                    aloc.append("11111")
+                                foundstate = False
+                            elif w.lower() in streets:
+                                # Remove last item from aloc and add anon street name
+                                aloc.pop()
+                                aloc.append("Anon")
+                                aloc.append(w)
+                                foundstate = False
+                            elif w not in longstates and w not in shortstates:
+                                if not foundstate:
+                                    aloc.append("AnonCity")
+                                else:
+                                    aloc.append("11111")
+                                    foundstate = False
+                            elif w in longstates:
+                                aloc.append("AnonState")
+                                foundstate = True
+                            else:
+                                aloc.append("AN")
+                                foundstate = True
+                            prev = w                        
+                        anonymized[candidate] = ' '.join(aloc)
+
+                        
 def check_names(content):
     # Split into new lines first
     s_list = content.split('\n')
@@ -81,7 +168,8 @@ def tag_sentence(content):
                 # print entity text, start_position and end_position
                 text=entity.text
                 value=entity.get_label("ner").value
-                if value=="PER" or value=="ORG" or value=="LOC":
+                
+                if value=="PER":
                     # Check if there is something extra
                     words = text.split(' ')
                     if len(words) >= 2:
@@ -89,13 +177,14 @@ def tag_sentence(content):
                             w = strip(w)
                             if w.lower() in greetings:
                                 words.remove(w)
-
-                    for w in words:
-                        w = strip(w)
-                        if len(w) > 0:
-                            toanon[w.title()] = value
-
-        
+                            else:
+                                toanon[w.title()] = value
+                                    
+                elif value=="ORG" or value=="LOC":
+                    w = strip(text)
+                    # Do not anon America
+                    if text.title() != "America":
+                        toanon[w] = value
 
 def strip(word):
     if len(word) > 0 and not word[-1].isalpha():
@@ -238,6 +327,39 @@ def anonymize_email(text):
                 text = text.replace(e, anonymized[e])
     return text
 
+def anonymize_url(text):
+    global anonymized, toanon
+    for e in toanon:
+        if toanon[e] == "url":
+            if e in anonymized:
+                text = text.replace(e, anonymized[e])
+    return text
+
+
+def anonymize_location(text):
+    global anonymized, toanon
+    for e in toanon:
+        if toanon[e] == "LOC":
+            if e in anonymized:
+                text = text.replace(e, anonymized[e])                
+            # Do second pass to remove zip codes
+            newtext = ""
+            n_list = text.split('\n')
+            for n in n_list:
+                p_list = n.split(' ')
+                a_list = []
+                prev = ""
+                for p in p_list:
+                    if prev == "AN":
+                        continue
+                    else:
+                        prev = p
+                        a_list.append(p)
+                newtext += ' '.join(a_list)
+                newtext += '\n'
+            text = newtext
+    return text
+
 
 def same_digits(a,b):
     an = ""
@@ -261,8 +383,10 @@ def anonymize_phone(text):
 def anonymize(text):
     global anonymized
     
-    text=anonymize_email(text)
     text=anonymize_phone(text)
+    text=anonymize_url(text)
+    text=anonymize_email(text)
+    text=anonymize_location(text)
     newtext=""
     a_list = nltk.tokenize.sent_tokenize(text)
     for a in a_list:
@@ -270,12 +394,11 @@ def anonymize(text):
         s_list = re.split('([\W\_])', a)
         for b in s_list:                
             if b in anonymized:
-                newsen += anonymized[b] # return punctuation 
+                newsen += anonymized[b] 
             elif b.title() in anonymized:
-                newsen += anonymized[b.title()] # return punctuation and capitalization
+                newsen += anonymized[b.title()]
             else:
                 newsen += b
-                #deal with other special chars as separators
         newtext += newsen + '\n'
     return newtext
     
@@ -292,6 +415,9 @@ anonymized=dict()
 text = ""
 
 dir_path = argv[1]
+out_path = argv[2]
+if not os.path.exists(out_path):
+    os.mkdir(out_path)
 for path in os.listdir(dir_path):
     # check if current path is a file
     if os.path.isfile(os.path.join(dir_path, path)):
@@ -347,7 +473,6 @@ for path in os.listdir(dir_path):
                     p = strip(p)
                     if p.title() in names and prev is not None:
                         # This is a last name
-                        #print("Found last name ", p.title(), " for firstname ", prev)
                         names[p.title()] = 2
                         lastname[prev] = p.title()
                     if p.title() in names and prev is None:
@@ -356,16 +481,16 @@ for path in os.listdir(dir_path):
         anonymized.clear()
         
         for n in names:
-            if n not in anonymized:
-                if names[n] == 1:
+            if len(n.strip()) == 0:
+                continue
+            if n.title() not in anonymized:
+                if names[n.title()] == 1:
                     an = get_random_name(False)
-                    anonymized[n] = an
-                    #print("Anonymized first name ", n, " as ", an)
+                    anonymized[n.title()] = an
                 else:
                     an = get_random_name(True)
-                    anonymized[n] = an
-                    #print("Anonymized last name ", n, " as ", an)
-
+                    anonymized[n.title()] = an
+                    
         for e in emails:
             eparts = e.split('@')
             euid = eparts[0].lower()
@@ -394,12 +519,10 @@ for path in os.listdir(dir_path):
                                 break
                 if aeuid == "":
                     aeuid = (get_random_name(False) + get_random_name(True))
-                #print("Anonymized ", euid, " as ", aeuid.lower())
                 anonymized[euid] = aeuid.lower()
                 for suf in our_suffixes:
                     if esuf.endswith(suf):
                         anonymized[e] = anonymized[euid] + "@anon.org"
-                        #print("Anonymized ", e, " as" , anonymized[e])
                         break
                 break
             
@@ -409,7 +532,6 @@ for path in os.listdir(dir_path):
                         aeuid = (get_random_name(False) + get_random_name(True))
                         anonymized[euid] = aeuid.lower()
                         anonymized[e] = anonymized[euid] + "@anon.org"
-                        #print("Anonymized ", e, " as" , anonymized[e])
                         break
                         
             for a in toanon:
@@ -424,26 +546,25 @@ for path in os.listdir(dir_path):
                     if a not in anonymized:
                         anonymized[a] = get_random_phone()
                         
-                    
-        # Must anon email first or else it will be anonymized separately
+        # Hunt for addresses
+        find_addresses(text)
+
+        # Hunt for URLs
+        find_urls(text)
+
+
+        for a in anonymized:
+            print("Will anon ", a, " as ", anonymized[a])
+            
         text=anonymize(text)
 
-        print("From:", anonymize(header[0]))
-        print("To:", anonymize(header[1]))
-        print("Subject:", anonymize(header[2]))
+        f = open(out_path + "/" + path, "w")
+        f.write("From:" + anonymize(header[0]))
+        f.write("To:" + anonymize(header[1]))
+        f.write("Subject:" + anonymize(header[2]))
             
-#        for s in ["from", "to", "subject"]:
-#            for elem in data["header"][s]:
-#                print("S is ", s, " elem ", elem)
-#                if isinstance(elem, list):
-#                    for e in elem:
-#                        ae = anonymize(e)
-#                        print(s, ":", ae)
-#                else:
-#                    ae = anonymize(elem)
-#                    print(s, ":", ae)
-                    
-        print(text)
+        f.write(text)
+        f.close()
         text = ""        
         toanon.clear()
         emails=[]
