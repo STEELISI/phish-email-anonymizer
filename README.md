@@ -17,8 +17,9 @@ Anonymizer will do the following:
 - detect email domains and change them ONLY if they belong to USC
 - detect URLs and crop them to only keep the domain
 
+Install anaconda
 
-Use environment.yml to start a virtual environment for Python
+Use environment.yml to start a virtual environment for Python like conda env create -f environment.yml
 
 Run code as:
-python anonymizer.py <input-folder> <output-folder>
+    python anonymizer.py <input-folder> <output-folder>
