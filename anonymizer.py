@@ -14,20 +14,20 @@ emails=[]
 names=dict()
 
 toanon=dict()
+anonymized=dict()
+tagger = None
+first_names = None
+last_names = None
+
 our_suffixes=['usc.edu', 'isi.edu']
 our_orgs=['usc', 'university of southern california', 'information sciences institute', 'institute for creative technologies', 'usc/isi', 'usc-isi', 'usc isi', 'isi', 'ict']
 
-def is_number(text):
-    for i in range(0, len(text)):
-        if not text[i].isdigit():
-            return False
-    return True
-
+# find overlap between personal names and emails to
+# possibly mine last name from email username
 def find_overlap(name, toadd):
     global emails, names
     overlap = 0
     name = strip(name)
-        
     for e in emails:
         eparts = e.split('@')
         euid = eparts[0].lower()
@@ -56,11 +56,15 @@ def find_overlap(name, toadd):
                         break
 
 
+# Find possible URLs and extract them,
+# then anonymize them by shortening them to
+# only domain name
 def find_urls(content):
-    #url_extract_pattern = "https?:\\/\\/(?:www\\.)?[-a-zA-Z0-9@:%._\\+~#=]{1,256}\\.[a-zA-Z0-9()]{1,6}\\b(?:[-a-zA-Z0-9()@:%_\\+.~#?&\\/=]*)"
+    global toanon, anonymized
     p_list = re.split('[\<\>\(\)\s]', content)
     for p in p_list:
         a = urlparse(p)
+        # Drop urldefense part if it is there
         if a.netloc == "urldefense.com":
             i = a.path.find("http")
             b = urlparse(a.path[i:])
@@ -69,7 +73,8 @@ def find_urls(content):
         elif a.scheme == 'http' or a.scheme == 'https':
             toanon[p] = "url"
             anonymized[p] = a.scheme+"://"+a.netloc
-    
+
+# Find possible addresses and anonymize them
 def find_addresses(content):
     global toanon, anonymized
     streets=['street', 'st', 'ave', 'avenue', 'blvd', 'boulevard', 'court', 'ct', 'road', 'rd', 'highway', 'hwy', 'lane', 'ln', 'way',
@@ -83,6 +88,7 @@ def find_addresses(content):
     for s in s_list:
         a_list = nltk.tokenize.sent_tokenize(s)
         for a in a_list:
+            # Split into words
             p_list = re.split('[\s\,\.\!\?]', a)
             for i in range(0, len(p_list)):
                 for j in range (0,3):
@@ -100,13 +106,13 @@ def find_addresses(content):
                             continue
 
                     if candidate in toanon and toanon[candidate] == "LOC":
-                        # Figure out if it is street, city, state, zip
+                        # Figure out if it is street, city, state
                         words = candidate.split(' ')
                         aloc = []
                         prev = ""
                         foundstate = ""
                         for w in words:
-                            if is_number(w):
+                            if w.isnumeric():
                                 if not foundstate:
                                     w = randint(1, 10000)
                                     aloc.append(str(w))
@@ -114,7 +120,7 @@ def find_addresses(content):
                                     aloc.append("11111")
                                 foundstate = False
                             elif w.lower() in streets:
-                                # Remove last item from aloc and add anon street name
+                                # Remove last item from aloc (street name) and add anon street name
                                 aloc.pop()
                                 aloc.append("Anon")
                                 aloc.append(w)
@@ -134,8 +140,11 @@ def find_addresses(content):
                             prev = w                        
                         anonymized[candidate] = ' '.join(aloc)
 
-                        
-def check_names(content):
+# Figure out for each word of content if it
+# may be personal name. Flair will only detect
+# properly capitalized names. We mine the rest
+# by checking them against to/from email usernames
+def check_names(content):    
     # Split into new lines first
     s_list = content.split('\n')
     for s in s_list:
@@ -145,8 +154,10 @@ def check_names(content):
             for p in p_list:
                 ov = find_overlap(p, True)
 
-        
+# Run Flair tagger on content. Take out greeting words that may
+# be tagged as part of name
 def tag_sentence(content):
+    global tagger, toanon
     greetings=['hi', 'hello', 'good', 'morning', 'evening', 'day', 'afternoon', 'dear', 'respected', 'mr', 'mrs', 'miss', 'dr', 'prof', 'doctor', 'professor', 'greetings']
     # Split into new lines first
     s_list = content.split('\n')
@@ -159,18 +170,14 @@ def tag_sentence(content):
             # run NER over sentence
             tagger.predict(sentence)
             
-            # print the sentence with all annotations
-            #print(sentence)
-            
-            
-            # iterate over entities and print each
+            # iterate over tagged entities
             for entity in sentence.get_spans('ner'):
-                # print entity text, start_position and end_position
                 text=entity.text
                 value=entity.get_label("ner").value
                 
                 if value=="PER":
-                    # Check if there is something extra
+                    # Check if there is something extra, like punctuation
+                    # or greeting word and strip it
                     words = text.split(' ')
                     if len(words) >= 2:
                         for w in words:
@@ -186,12 +193,13 @@ def tag_sentence(content):
                     if text.title() != "America":
                         toanon[w] = value
 
+# Remove punctuation at the end                        
 def strip(word):
     if len(word) > 0 and not word[-1].isalpha():
         return word[0:len(word)-1]
     return word
 
-    
+# Detect emails    
 def check_email(content):
     # Split into new lines first
     s_list = content.split('\n')
@@ -203,7 +211,7 @@ def check_email(content):
                 p_list.append(a)
     return p_list
 
-
+# Detect phone numbers
 def check_phone(content):
     # Split into new lines first
     s_list = content.split('\n')
@@ -230,6 +238,7 @@ def check_phone(content):
                 valid=False
                 
                 try:
+                    # Only anon US phone numbers
                     valid=phonenumbers.is_valid_number(phonenumbers.parse(candidate, "US"))
                 except:
                     pass
@@ -238,6 +247,7 @@ def check_phone(content):
                 if valid:
                     # Check if this string has any alphabetic chars
                     # or any other characters that are not in the right place
+                    # because phonenumbers package will still tag them as valid
                     isND=False
                     for k in range(0, len(candidate)):
                         if not candidate[k].isdigit():
@@ -252,26 +262,30 @@ def check_phone(content):
                             
                     if isFormatted:
                         p_list.append(candidate)
-
     return p_list
 
+# Parse and tag email content
 def parse(data):
     global toanon, emails
     # Check if there are phone numbers in the data
     p_list=check_phone(data)
     for p in p_list:
         toanon[p]="phone"
-        
+
+    # Check for email addresses
     a_list=check_email(data)
     for a in a_list:
         toanon[a]="email"
-        
+
+    # This function is called twice. First time it
+    # just tags data using Flair. The second time
+    # it refines PER info
     if len(emails) == 0:
         tag_sentence(data)
-    else:        
+    else:
         check_names(data)
         
-                
+# This may be useful later if we want to parse HTML parts of email               
 #class MyHTMLParser(HTMLParser):
     
 #    def handle_starttag(self, tag, attrs):
@@ -298,7 +312,8 @@ def parse(data):
 #            tag_sentence(data)
 #        else:        
 #            check_names(data)
-        
+
+# Generate a random phone number
 def get_random_phone():
     phone = "("
     for i in range(0,10):
@@ -309,16 +324,17 @@ def get_random_phone():
             phone += "-"
     return phone
 
+# Generate a random name
 def get_random_name (last):
     global first_names, last_names
     if last:
         n=randint(0,500)
         return last_names[n]
     else:
-        n=randint(0,1000)
+        n=randint(0,500)
         return first_names[n]
 
-
+# Anonymize email address
 def anonymize_email(text):
     global anonymized, toanon
     for e in toanon:
@@ -327,6 +343,7 @@ def anonymize_email(text):
                 text = text.replace(e, anonymized[e])
     return text
 
+# Anonymize URLs
 def anonymize_url(text):
     global anonymized, toanon
     for e in toanon:
@@ -335,7 +352,7 @@ def anonymize_url(text):
                 text = text.replace(e, anonymized[e])
     return text
 
-
+# Anonymize addresses
 def anonymize_location(text):
     global anonymized, toanon
     for e in toanon:
@@ -360,7 +377,8 @@ def anonymize_location(text):
             text = newtext
     return text
 
-
+# Check if two phone numbers have the same digits but
+# different formatting. If so, keep the first anonymization.
 def same_digits(a,b):
     an = ""
     for e in re.split('\D', a):
@@ -371,7 +389,8 @@ def same_digits(a,b):
     if an == bn:
         return True
     return False
-        
+
+# Anonymize phone numbers
 def anonymize_phone(text):
     global anonymized, toanon
     for e in toanon:
@@ -380,6 +399,7 @@ def anonymize_phone(text):
                 text = text.replace(e, anonymized[e])
     return text
 
+# Anonymize text of email
 def anonymize(text):
     global anonymized
     
@@ -401,122 +421,126 @@ def anonymize(text):
                 newsen += b
         newtext += newsen + '\n'
     return newtext
+
+def main():
+    global anonymized, toanon, tagger, first_names, last_names, emails
+    #parser = MyHTMLParser()
+    nd=NameDataset()
+    d1=nd.get_top_names(n=500, country_alpha2="US")
+    first_names = d1['US']['M'] + d1['US']['F']
+    d1=nd.get_top_names(n=500, country_alpha2="US", use_first_names=False)
+    last_names = d1['US']
+
+    nltk.download('punkt') # Only needed the first time
+    tagger = SequenceTagger.load('ner')
+    text = ""
+
+    dir_path = argv[1]
+    out_path = argv[2]
     
-#parser = MyHTMLParser()
-nd=NameDataset()
-d1=nd.get_top_names(n=500, country_alpha2="US")
-first_names = d1['US']['M'] + d1['US']['F']
-d1=nd.get_top_names(n=500, country_alpha2="US", use_first_names=False)
-last_names = d1['US']
-
-#nltk.download('punkt')
-tagger = SequenceTagger.load('ner')
-anonymized=dict()
-text = ""
-
-dir_path = argv[1]
-out_path = argv[2]
-if not os.path.exists(out_path):
-    os.mkdir(out_path)
-for path in os.listdir(dir_path):
-    # check if current path is a file
-    if os.path.isfile(os.path.join(dir_path, path)):
-        print("MESSAGE ", path)
-        text = ""
-        header = []
-        f = open(os.path.join(dir_path, path))
-        data = json.load(f)
-        for elem in data["body"]:
-            if elem["content_header"]["content-type"][0].find("text/plain") > -1:                
-                parse(elem["content"])
-                text += elem["content"]
-        for elem in data["header"]["from"], data["header"]["to"], data["header"]["subject"]:
-            if isinstance(elem, list):
-                for e in elem:
-                    parse(e)
-                    header.append(e)
-            else:
-                parse(elem)
-                header.append(elem)
+    if not os.path.exists(out_path):
+        os.mkdir(out_path)
+    for path in os.listdir(dir_path):
+        # check if current path is a file
+        if os.path.isfile(os.path.join(dir_path, path)):
+            print("MESSAGE ", path)
+            text = ""
+            header = []
+            f = open(os.path.join(dir_path, path))
+            data = json.load(f)
+            # Parse only text/plain content
+            for elem in data["body"]:
+                if elem["content_header"]["content-type"][0].find("text/plain") > -1:                
+                    parse(elem["content"])
+                    text += elem["content"]
+            # Parse header
+            for elem in data["header"]["from"], data["header"]["to"], data["header"]["subject"]:
+                if isinstance(elem, list):
+                    for e in elem:
+                        parse(e)
+                        header.append(e)
+                else:
+                    parse(elem)
+                    header.append(elem)
             
 
-        emails=[]
-        lastname=dict()
-        names.clear()
-        for a in toanon:
-            if toanon[a] == "email":
-                emails.append(a)
+            emails=[]
+            lastname=dict()
+            names.clear()
+            
+            for a in toanon:
+                if toanon[a] == "email":
+                    emails.append(a)
 
-        # Second pass to detect missing names
-        parse(text)
+            # Second pass to detect missing names
+            parse(text)
 
-        for a in toanon:
-            #print("To anon ", a, " type ", toanon[a])
-            if toanon[a] == "PER":
-                names[a] = 1
+            for a in toanon:
+                if toanon[a] == "PER":
+                    names[a] = 1
 
-        # Now hunt for last names
-        s_list = text.split('\n')
-        for s in s_list:
-            a_list = nltk.tokenize.sent_tokenize(s)
-            for a in a_list:
-                p_list = a.split(' ')
+            # Now hunt for last names
+            s_list = text.split('\n')
+            for s in s_list:
+                a_list = nltk.tokenize.sent_tokenize(s)
+                for a in a_list:
+                    p_list = a.split(' ')
                 
-                # Find missing names
-                for p in p_list:
-                    if p.title() not in names and (p.title() not in toanon and p not in toanon):
-                        find_overlap(p, False)
+                    # Find missing names
+                    for p in p_list:
+                        if p.title() not in names and (p.title() not in toanon and p not in toanon):
+                            find_overlap(p, False)
 
-                # Second pass to find missing last names
-                prev = None
-                for p in p_list:
-                    p = strip(p)
-                    if p.title() in names and prev is not None:
-                        # This is a last name
-                        names[p.title()] = 2
-                        lastname[prev] = p.title()
-                    if p.title() in names and prev is None:
-                        prev = p.title()
+                    # Second pass to find missing last names
+                    prev = None
+                    for p in p_list:
+                        p = strip(p)
+                        if p.title() in names and prev is not None:
+                            # This is a last name
+                            names[p.title()] = 2
+                            lastname[prev] = p.title()
+                        if p.title() in names and prev is None:
+                            prev = p.title()
 
-        anonymized.clear()
+            anonymized.clear()
         
-        for n in names:
-            if len(n.strip()) == 0:
-                continue
-            if n.title() not in anonymized:
-                if names[n.title()] == 1:
-                    an = get_random_name(False)
-                    anonymized[n.title()] = an
-                else:
-                    an = get_random_name(True)
-                    anonymized[n.title()] = an
+            for n in names:
+                if len(n.strip()) == 0:
+                    continue
+                if n.title() not in anonymized:
+                    if names[n.title()] == 1:
+                        an = get_random_name(False)
+                        anonymized[n.title()] = an
+                    else:
+                        an = get_random_name(True)
+                        anonymized[n.title()] = an
                     
-        for e in emails:
-            eparts = e.split('@')
-            euid = eparts[0].lower()
-            esuf = eparts[1]
-            aeuid = ""
-            for name in names:
-                match = SequenceMatcher(None, euid, name.lower()).find_longest_match(0, len(euid), 0, len(name))                
-                if match.size > 0 and match.a == 0 and names[name] == 1:
-                    #print("Found overlap between ", euid, " and first name ", name.title())
-                    aeuid = anonymized[name.title()]
-                    found = False
-                    if name.title() in lastname:
-                        #print("Found in lastname ", lastname[name.title()])
-                        aeuid += anonymized[lastname[name.title()]]
-                    else:    
-                        for lname in names:
-                            if names[lname] == 2:
-                                for i in range (1,len(lname)):  
-                                    seg = lname[:i+1].lower()
-                                    #print ("Trying segment ", seg)
-                                    if name.lower() + seg == euid:                                  
-                                        aeuid += anonymized[lname.title()]
-                                        found = True
-                                        break
-                            if found:
-                                break
+            for e in emails:
+                eparts = e.split('@')
+                euid = eparts[0].lower()
+                esuf = eparts[1]
+                aeuid = ""
+                for name in names:
+                    match = SequenceMatcher(None, euid, name.lower()).find_longest_match(0, len(euid), 0, len(name))                
+                    if match.size > 0 and match.a == 0 and names[name] == 1:
+                        #print("Found overlap between ", euid, " and first name ", name.title())
+                        aeuid = anonymized[name.title()]
+                        found = False
+                        if name.title() in lastname:
+                            #print("Found in lastname ", lastname[name.title()])
+                            aeuid += anonymized[lastname[name.title()]]
+                        else:    
+                            for lname in names:
+                                if names[lname] == 2:
+                                    for i in range (1,len(lname)):  
+                                        seg = lname[:i+1].lower()
+                                        #print ("Trying segment ", seg)
+                                        if name.lower() + seg == euid:                                  
+                                            aeuid += anonymized[lname.title()]
+                                            found = True
+                                            break
+                                if found:
+                                    break
                 if aeuid == "":
                     aeuid = (get_random_name(False) + get_random_name(True))
                 anonymized[euid] = aeuid.lower()
@@ -526,13 +550,13 @@ for path in os.listdir(dir_path):
                         break
                 break
             
-            if euid not in anonymized:
-                for suf in our_suffixes:
-                    if esuf.endswith(suf):
-                        aeuid = (get_random_name(False) + get_random_name(True))
-                        anonymized[euid] = aeuid.lower()
-                        anonymized[e] = anonymized[euid] + "@anon.org"
-                        break
+                if euid not in anonymized:
+                    for suf in our_suffixes:
+                        if esuf.endswith(suf):
+                            aeuid = (get_random_name(False) + get_random_name(True))
+                            anonymized[euid] = aeuid.lower()
+                            anonymized[e] = anonymized[euid] + "@anon.org"
+                            break
                         
             for a in toanon:
                 if toanon[a] == "ORG" and a.lower() in our_orgs:
@@ -546,26 +570,31 @@ for path in os.listdir(dir_path):
                     if a not in anonymized:
                         anonymized[a] = get_random_phone()
                         
-        # Hunt for addresses
-        find_addresses(text)
+            # Hunt for addresses
+            find_addresses(text)
+        
+            # Hunt for URLs
+            find_urls(text)
 
-        # Hunt for URLs
-        find_urls(text)
 
-
-        for a in anonymized:
-            print("Will anon ", a, " as ", anonymized[a])
+            for a in anonymized:
+                print("Will anon ", a, " as ", anonymized[a])
             
-        text=anonymize(text)
+            text=anonymize(text)
 
-        f = open(out_path + "/" + path, "w")
-        f.write("From:" + anonymize(header[0]))
-        f.write("To:" + anonymize(header[1]))
-        f.write("Subject:" + anonymize(header[2]))
+            # Save results
+            f = open(out_path + "/" + path, "w")
+            f.write("From:" + anonymize(header[0]))
+            f.write("To:" + anonymize(header[1]))
+            f.write("Subject:" + anonymize(header[2]))
             
-        f.write(text)
-        f.close()
-        text = ""        
-        toanon.clear()
-        emails=[]
-        names.clear()
+            f.write(text)
+            f.close()
+            text = ""        
+            toanon.clear()
+            emails=[]
+            names.clear()
+
+# Main program
+if __name__ == '__main__':
+    main()
