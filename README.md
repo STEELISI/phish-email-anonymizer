@@ -7,6 +7,8 @@ and body of the email, in an output folder, as plain text.
 Emails can be transformed from EML to JSON using code at
 https://gitlab.com/isi-piranha/tools/eml-munging-toolkit
 
+Save the output in input-folder
+
 Anonymizer will do the following:
 - keep only content=text/plain parts of email
 - keep from, to and subject from email header
